@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useMemo, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useMemo, ReactNode, useRef } from 'react';
 import {
   DatabaseState,
   TransaksiKlien,
@@ -113,6 +113,8 @@ export const INITIAL_DATABASE: DatabaseState = {
   ketentuan: DEFAULT_KETENTUAN,
 };
 
+export type SyncStatus = 'idle' | 'syncing' | 'synced' | 'error';
+
 interface FinancialContextType {
   db: DatabaseState;
   currentPage: PageId;
@@ -120,12 +122,14 @@ interface FinancialContextType {
   toastMessage: string | null;
   showToast: (msg: string) => void;
 
-  // Supabase Status & Sync
+  // Supabase Silent & Background Status
   isSupabaseConfigured: boolean;
   isSupabaseConnected: boolean;
   isSyncing: boolean;
+  syncStatus: SyncStatus;
+  lastSyncTime: Date | null;
   syncAllToSupabase: (customDb?: DatabaseState) => Promise<boolean>;
-  refreshFromSupabase: () => Promise<void>;
+  refreshFromSupabase: (options?: { silent?: boolean }) => Promise<void>;
 
   // CRUD Transaksi Klien
   saveKlien: (item: TransaksiKlien) => void;
@@ -222,8 +226,15 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
   const [currentPage, setCurrentPage] = useState<PageId>('dashboard');
   const [navParams, setNavParams] = useState<NavigationParams | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  // Background Sync States
   const [isSupabaseConnected, setIsSupabaseConnected] = useState<boolean>(isSupabaseConfigured);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>(isSupabaseConfigured ? 'synced' : 'idle');
+  const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null);
+
+  // Ref to prevent overlapping fetch runs
+  const isFetchingRef = useRef<boolean>(false);
 
   const navigateWithParams = (page: PageId, params?: NavigationParams) => {
     setNavParams(params || null);
@@ -241,7 +252,7 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
     }, 3500);
   };
 
-  // Sync state to local storage as fallback
+  // Sync state to local storage as continuous fallback
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(db));
@@ -250,10 +261,16 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
     }
   }, [db]);
 
-  // Load from Supabase on start
-  const refreshFromSupabase = async () => {
+  // Silent & Background Refresh from Supabase
+  const refreshFromSupabase = async (options?: { silent?: boolean }) => {
+    const silent = options?.silent ?? false;
     if (!isSupabaseConfigured || !supabase) return;
+    if (isFetchingRef.current) return;
+
+    isFetchingRef.current = true;
     setIsSyncing(true);
+    setSyncStatus('syncing');
+
     try {
       const res = await fetchAllFromSupabase();
       if (res.success && res.data) {
@@ -271,28 +288,95 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
             ...fetched,
             ketentuan: prev.ketentuan || DEFAULT_KETENTUAN,
           }));
-          setIsSupabaseConnected(true);
-          showToast('Data berhasil disinkronkan dari Supabase.');
-        } else {
-          setIsSupabaseConnected(true);
+        }
+
+        setIsSupabaseConnected(true);
+        setSyncStatus('synced');
+        setLastSyncTime(new Date());
+
+        if (!silent) {
+          showToast('Data berhasil disegarkan dari Supabase.');
         }
       } else if (res.error) {
-        console.warn('Supabase fetch error:', res.error);
-        setIsSupabaseConnected(false);
+        console.warn('Supabase fetch notice:', res.error);
+        setSyncStatus('error');
+        if (!silent) {
+          showToast(`Gagal memuat: ${res.error}`);
+        }
       }
     } catch (e) {
       console.error('Failed to load Supabase data:', e);
-      setIsSupabaseConnected(false);
+      setSyncStatus('error');
     } finally {
       setIsSyncing(false);
+      isFetchingRef.current = false;
     }
   };
 
+  // Realtime & Periodic Background Sync Setup
   useEffect(() => {
-    if (isSupabaseConfigured) {
-      refreshFromSupabase();
-    }
-  }, []);
+    if (!isSupabaseConfigured || !supabase) return;
+
+    // 1. Initial silent load
+    refreshFromSupabase({ silent: true });
+
+    // 2. Realtime WebSocket listener on PostgreSQL changes
+    const channel = supabase
+      .channel('finman_db_changes')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public' },
+        () => {
+          // Subtle background sync when other users save data
+          refreshFromSupabase({ silent: true });
+        }
+      )
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          setIsSupabaseConnected(true);
+        }
+      });
+
+    // 3. Fallback Periodic Silent Polling (Every 25 seconds when tab is active)
+    const interval = setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+        refreshFromSupabase({ silent: true });
+      }
+    }, 25000);
+
+    // 4. Instant silent sync when user returns to this window
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        refreshFromSupabase({ silent: true });
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    return () => {
+      supabase.removeChannel(channel);
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [isSupabaseConfigured]);
+
+  // Helper for silent asynchronous background mutation
+  const triggerBackgroundMutation = (promise: Promise<any>) => {
+    setSyncStatus('syncing');
+    promise
+      .then(({ error }) => {
+        if (error) {
+          console.error('Background sync error:', error);
+          setSyncStatus('error');
+        } else {
+          setSyncStatus('synced');
+          setLastSyncTime(new Date());
+        }
+      })
+      .catch((err) => {
+        console.error('Background network sync error:', err);
+        setSyncStatus('error');
+      });
+  };
 
   // Upload/Push entire DB to Supabase
   const syncAllToSupabase = async (customDb?: DatabaseState): Promise<boolean> => {
@@ -301,16 +385,22 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
       return false;
     }
     setIsSyncing(true);
+    setSyncStatus('syncing');
     showToast('Mengunggah seluruh data ke database Supabase...');
+
     const target = customDb || db;
     const res = await pushAllToSupabase(target);
     setIsSyncing(false);
+
     if (res.success) {
       setIsSupabaseConnected(true);
+      setSyncStatus('synced');
+      setLastSyncTime(new Date());
       showToast('Sukses! Seluruh data kini telah tersimpan di Supabase.');
       return true;
     } else {
       setIsSupabaseConnected(false);
+      setSyncStatus('error');
       showToast(`Gagal kirim ke Supabase: ${res.error}`);
       return false;
     }
@@ -330,9 +420,9 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
     }));
 
     if (supabase) {
-      supabase.from('aktual_cash').upsert(mapAktualCashToSnake(newEntry), { onConflict: 'id' }).then(({ error }) => {
-        if (error) console.error('Supabase error saveAktualCash:', error);
-      });
+      triggerBackgroundMutation(
+        supabase.from('aktual_cash').upsert(mapAktualCashToSnake(newEntry), { onConflict: 'id' })
+      );
     }
 
     showToast('Aktual Cash Balance berhasil diperbarui.');
@@ -494,6 +584,7 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
 
   // Transaksi Klien Handlers
   const saveKlien = (item: TransaksiKlien) => {
+    // 1. Instant optimistic update to local state (0ms latency for user)
     setDb((prev) => {
       const idx = prev.transaksiKlien.findIndex((r) => r.id === item.id);
       let updated: TransaksiKlien[];
@@ -506,10 +597,11 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
       return { ...prev, transaksiKlien: updated };
     });
 
+    // 2. Silent background sync to Supabase
     if (supabase) {
-      supabase.from('transaksi_klien').upsert(mapKlienToSnake(item), { onConflict: 'id' }).then(({ error }) => {
-        if (error) console.error('Supabase error saveKlien:', error);
-      });
+      triggerBackgroundMutation(
+        supabase.from('transaksi_klien').upsert(mapKlienToSnake(item), { onConflict: 'id' })
+      );
     }
 
     showToast(`Data Transaksi Klien ${item.invoice} tersimpan.`);
@@ -522,9 +614,9 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
     }));
 
     if (supabase) {
-      supabase.from('transaksi_klien').delete().eq('id', id).then(({ error }) => {
-        if (error) console.error('Supabase error deleteKlien:', error);
-      });
+      triggerBackgroundMutation(
+        supabase.from('transaksi_klien').delete().eq('id', id)
+      );
     }
 
     showToast('Data Transaksi Klien berhasil dihapus.');
@@ -537,9 +629,9 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
     }));
 
     if (supabase) {
-      supabase.from('transaksi_klien').delete().in('id', ids).then(({ error }) => {
-        if (error) console.error('Supabase error deleteMultipleKlien:', error);
-      });
+      triggerBackgroundMutation(
+        supabase.from('transaksi_klien').delete().in('id', ids)
+      );
     }
 
     showToast(`${ids.length} data Transaksi Klien dihapus.`);
@@ -560,9 +652,9 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
     });
 
     if (supabase) {
-      supabase.from('transaksi_vendor').upsert(mapVendorToSnake(item), { onConflict: 'id' }).then(({ error }) => {
-        if (error) console.error('Supabase error saveVendor:', error);
-      });
+      triggerBackgroundMutation(
+        supabase.from('transaksi_vendor').upsert(mapVendorToSnake(item), { onConflict: 'id' })
+      );
     }
 
     showToast(`Data Transaksi Vendor (${item.namaVendor}) tersimpan.`);
@@ -575,9 +667,9 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
     }));
 
     if (supabase) {
-      supabase.from('transaksi_vendor').delete().eq('id', id).then(({ error }) => {
-        if (error) console.error('Supabase error deleteVendor:', error);
-      });
+      triggerBackgroundMutation(
+        supabase.from('transaksi_vendor').delete().eq('id', id)
+      );
     }
 
     showToast('Data Transaksi Vendor berhasil dihapus.');
@@ -590,9 +682,9 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
     }));
 
     if (supabase) {
-      supabase.from('transaksi_vendor').delete().in('id', ids).then(({ error }) => {
-        if (error) console.error('Supabase error deleteMultipleVendor:', error);
-      });
+      triggerBackgroundMutation(
+        supabase.from('transaksi_vendor').delete().in('id', ids)
+      );
     }
 
     showToast(`${ids.length} data Transaksi Vendor dihapus.`);
@@ -613,9 +705,9 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
     });
 
     if (supabase) {
-      supabase.from('operasional').upsert(mapOperasionalToSnake(item), { onConflict: 'id' }).then(({ error }) => {
-        if (error) console.error('Supabase error saveOperasional:', error);
-      });
+      triggerBackgroundMutation(
+        supabase.from('operasional').upsert(mapOperasionalToSnake(item), { onConflict: 'id' })
+      );
     }
 
     showToast(`Data Operasional "${item.pengeluaran}" tersimpan.`);
@@ -628,9 +720,9 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
     }));
 
     if (supabase) {
-      supabase.from('operasional').delete().eq('id', id).then(({ error }) => {
-        if (error) console.error('Supabase error deleteOperasional:', error);
-      });
+      triggerBackgroundMutation(
+        supabase.from('operasional').delete().eq('id', id)
+      );
     }
 
     showToast('Data Operasional berhasil dihapus.');
@@ -643,9 +735,9 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
     }));
 
     if (supabase) {
-      supabase.from('operasional').delete().in('id', ids).then(({ error }) => {
-        if (error) console.error('Supabase error deleteMultipleOperasional:', error);
-      });
+      triggerBackgroundMutation(
+        supabase.from('operasional').delete().in('id', ids)
+      );
     }
 
     showToast(`${ids.length} data Operasional dihapus.`);
@@ -666,9 +758,9 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
     });
 
     if (supabase) {
-      supabase.from('master_vendor').upsert(mapMasterVendorToSnake(item), { onConflict: 'id' }).then(({ error }) => {
-        if (error) console.error('Supabase error saveMasterVendor:', error);
-      });
+      triggerBackgroundMutation(
+        supabase.from('master_vendor').upsert(mapMasterVendorToSnake(item), { onConflict: 'id' })
+      );
     }
 
     showToast(`Master Vendor "${item.namaVendor}" tersimpan.`);
@@ -681,9 +773,9 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
     }));
 
     if (supabase) {
-      supabase.from('master_vendor').delete().eq('id', id).then(({ error }) => {
-        if (error) console.error('Supabase error deleteMasterVendor:', error);
-      });
+      triggerBackgroundMutation(
+        supabase.from('master_vendor').delete().eq('id', id)
+      );
     }
 
     showToast('Master Vendor dihapus.');
@@ -704,9 +796,9 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
     });
 
     if (supabase) {
-      supabase.from('report_bank').upsert(mapBankToSnake(item), { onConflict: 'id' }).then(({ error }) => {
-        if (error) console.error('Supabase error saveBank:', error);
-      });
+      triggerBackgroundMutation(
+        supabase.from('report_bank').upsert(mapBankToSnake(item), { onConflict: 'id' })
+      );
     }
 
     showToast(`Rekening Bank "${item.namaBank}" tersimpan.`);
@@ -719,9 +811,9 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
     }));
 
     if (supabase) {
-      supabase.from('report_bank').delete().eq('id', id).then(({ error }) => {
-        if (error) console.error('Supabase error deleteBank:', error);
-      });
+      triggerBackgroundMutation(
+        supabase.from('report_bank').delete().eq('id', id)
+      );
     }
 
     showToast('Rekening Bank dihapus.');
@@ -824,9 +916,9 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
     });
 
     if (supabase && updatedTarget) {
-      supabase.from('transaksi_klien').upsert(mapKlienToSnake(updatedTarget), { onConflict: 'id' }).then(({ error }) => {
-        if (error) console.error('Supabase error recordKlienPayment:', error);
-      });
+      triggerBackgroundMutation(
+        supabase.from('transaksi_klien').upsert(mapKlienToSnake(updatedTarget), { onConflict: 'id' })
+      );
     }
 
     showToast(`Penerimaan pembayaran piutang klien berhasil dicatat.`);
@@ -863,9 +955,9 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
     });
 
     if (supabase && updatedTarget) {
-      supabase.from('transaksi_vendor').upsert(mapVendorToSnake(updatedTarget), { onConflict: 'id' }).then(({ error }) => {
-        if (error) console.error('Supabase error recordVendorPayment:', error);
-      });
+      triggerBackgroundMutation(
+        supabase.from('transaksi_vendor').upsert(mapVendorToSnake(updatedTarget), { onConflict: 'id' })
+      );
     }
 
     showToast(`Pembayaran hutang vendor berhasil dicatat.`);
@@ -882,6 +974,8 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
         isSupabaseConfigured,
         isSupabaseConnected,
         isSyncing,
+        syncStatus,
+        lastSyncTime,
         syncAllToSupabase,
         refreshFromSupabase,
         saveKlien,

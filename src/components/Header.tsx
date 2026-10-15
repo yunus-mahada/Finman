@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Menu, RefreshCw, Database } from 'lucide-react';
+import { Menu, RefreshCw, Database, Cloud, CloudOff, Check } from 'lucide-react';
 import { useFinancial } from '../context/FinancialContext';
 
 interface HeaderProps {
@@ -7,7 +7,15 @@ interface HeaderProps {
 }
 
 export const Header: React.FC<HeaderProps> = ({ onOpenMobileMenu }) => {
-  const { currentPage, setCurrentPage, showToast, isSupabaseConfigured, refreshFromSupabase } = useFinancial();
+  const {
+    currentPage,
+    setCurrentPage,
+    showToast,
+    isSupabaseConfigured,
+    syncStatus,
+    lastSyncTime,
+    refreshFromSupabase,
+  } = useFinancial();
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [currentDateStr, setCurrentDateStr] = useState('');
 
@@ -98,11 +106,43 @@ export const Header: React.FC<HeaderProps> = ({ onOpenMobileMenu }) => {
       </div>
 
       <div className="flex items-center gap-2.5">
-        {/* Status chip */}
+        {/* Subtle Background Sync Status Chip */}
         {isSupabaseConfigured ? (
-          <div className="hidden sm:flex items-center gap-1.5 text-[11px] text-emerald-300 bg-emerald-950/40 px-2.5 py-1 rounded-full border border-emerald-500/20">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-            <span className="font-medium">Supabase Cloud Aktif</span>
+          <div
+            className={`hidden sm:flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-full border transition-all duration-300 ${
+              syncStatus === 'syncing'
+                ? 'bg-purple-950/40 text-purple-300 border-purple-500/30'
+                : syncStatus === 'error'
+                ? 'bg-amber-950/40 text-amber-300 border-amber-500/30'
+                : 'bg-emerald-950/40 text-emerald-300 border-emerald-500/20'
+            }`}
+            title={
+              lastSyncTime
+                ? `Terakhir disinkronkan: ${lastSyncTime.toLocaleTimeString('id-ID')}`
+                : 'Sinkronisasi otomatis latar belakang aktif'
+            }
+          >
+            {syncStatus === 'syncing' ? (
+              <>
+                <RefreshCw className="w-3 h-3 text-purple-400 animate-spin" />
+                <span className="font-medium">Sinkron Latar Belakang...</span>
+              </>
+            ) : syncStatus === 'error' ? (
+              <>
+                <CloudOff className="w-3 h-3 text-amber-400" />
+                <span className="font-medium">Offline (Tersimpan Lokal)</span>
+              </>
+            ) : (
+              <>
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                <span className="font-medium">Tersinkron Realtime</span>
+                {lastSyncTime && (
+                  <span className="text-[10px] text-emerald-400/70 font-mono hidden md:inline">
+                    ({lastSyncTime.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })})
+                  </span>
+                )}
+              </>
+            )}
           </div>
         ) : (
           <div className="hidden sm:flex items-center gap-1.5 text-[11px] text-amber-300 bg-amber-950/40 px-2.5 py-1 rounded-full border border-amber-500/20">
