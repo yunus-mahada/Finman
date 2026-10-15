@@ -7,7 +7,7 @@ interface HeaderProps {
 }
 
 export const Header: React.FC<HeaderProps> = ({ onOpenMobileMenu }) => {
-  const { currentPage, setCurrentPage, showToast } = useFinancial();
+  const { currentPage, setCurrentPage, showToast, isSupabaseConfigured, refreshFromSupabase } = useFinancial();
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [currentDateStr, setCurrentDateStr] = useState('');
 
@@ -66,12 +66,16 @@ export const Header: React.FC<HeaderProps> = ({ onOpenMobileMenu }) => {
     subtitle: 'Manajemen Keuangan Bisnis',
   };
 
-  const handleRefresh = () => {
+  const handleRefresh = async () => {
     setIsRefreshing(true);
-    setTimeout(() => {
-      setIsRefreshing(false);
-      showToast('Data berhasil diperbarui.');
-    }, 400);
+    if (isSupabaseConfigured) {
+      await refreshFromSupabase();
+    } else {
+      setTimeout(() => {
+        showToast('Data lokal diperbarui.');
+      }, 400);
+    }
+    setIsRefreshing(false);
   };
 
   return (
@@ -95,10 +99,17 @@ export const Header: React.FC<HeaderProps> = ({ onOpenMobileMenu }) => {
 
       <div className="flex items-center gap-2.5">
         {/* Status chip */}
-        <div className="hidden sm:flex items-center gap-1.5 text-[11px] text-emerald-300 bg-emerald-950/40 px-2.5 py-1 rounded-full border border-emerald-500/20">
-          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-          <span className="font-medium">Penyimpanan Lokal Aktif</span>
-        </div>
+        {isSupabaseConfigured ? (
+          <div className="hidden sm:flex items-center gap-1.5 text-[11px] text-emerald-300 bg-emerald-950/40 px-2.5 py-1 rounded-full border border-emerald-500/20">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            <span className="font-medium">Supabase Cloud Aktif</span>
+          </div>
+        ) : (
+          <div className="hidden sm:flex items-center gap-1.5 text-[11px] text-amber-300 bg-amber-950/40 px-2.5 py-1 rounded-full border border-amber-500/20">
+            <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+            <span className="font-medium">Penyimpanan Lokal (Offline)</span>
+          </div>
+        )}
 
         {/* Date */}
         <span className="hidden xl:inline text-[11px] text-slate-400 font-medium font-mono">
@@ -113,7 +124,7 @@ export const Header: React.FC<HeaderProps> = ({ onOpenMobileMenu }) => {
             title="Buka Skema & Panduan Supabase"
           >
             <Database className="w-3 h-3 text-purple-400" />
-            <span>Skema Supabase</span>
+            <span>Koneksi Supabase</span>
           </button>
         )}
 

@@ -11,6 +11,18 @@ import {
   NavigationParams,
   KetentuanItem,
 } from '../types';
+import {
+  supabase,
+  isSupabaseConfigured,
+  fetchAllFromSupabase,
+  pushAllToSupabase,
+  mapKlienToSnake,
+  mapVendorToSnake,
+  mapOperasionalToSnake,
+  mapMasterVendorToSnake,
+  mapBankToSnake,
+  mapAktualCashToSnake,
+} from '../utils/supabaseClient';
 
 const STORAGE_KEY = 'finman_database_store_v2';
 
@@ -108,6 +120,13 @@ interface FinancialContextType {
   toastMessage: string | null;
   showToast: (msg: string) => void;
 
+  // Supabase Status & Sync
+  isSupabaseConfigured: boolean;
+  isSupabaseConnected: boolean;
+  isSyncing: boolean;
+  syncAllToSupabase: (customDb?: DatabaseState) => Promise<boolean>;
+  refreshFromSupabase: () => Promise<void>;
+
   // CRUD Transaksi Klien
   saveKlien: (item: TransaksiKlien) => void;
   deleteKlien: (id: string) => void;
@@ -183,9 +202,7 @@ const FinancialContext = createContext<FinancialContextType | undefined>(undefin
 export function FinancialProvider({ children }: { children: ReactNode }) {
   const [db, setDb] = useState<DatabaseState>(() => {
     try {
-      // Bersihkan cache v1 lama jika ada
       localStorage.removeItem('finman_database_store_v1');
-
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
@@ -205,6 +222,8 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
   const [currentPage, setCurrentPage] = useState<PageId>('dashboard');
   const [navParams, setNavParams] = useState<NavigationParams | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [isSupabaseConnected, setIsSupabaseConnected] = useState<boolean>(isSupabaseConfigured);
+  const [isSyncing, setIsSyncing] = useState<boolean>(false);
 
   const navigateWithParams = (page: PageId, params?: NavigationParams) => {
     setNavParams(params || null);
@@ -215,7 +234,14 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
     setNavParams(null);
   };
 
-  // Sync to localStorage
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => {
+      setToastMessage((prev) => (prev === msg ? null : prev));
+    }, 3500);
+  };
+
+  // Sync state to local storage as fallback
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(db));
@@ -224,11 +250,70 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
     }
   }, [db]);
 
-  const showToast = (msg: string) => {
-    setToastMessage(msg);
-    setTimeout(() => {
-      setToastMessage((prev) => (prev === msg ? null : prev));
-    }, 3200);
+  // Load from Supabase on start
+  const refreshFromSupabase = async () => {
+    if (!isSupabaseConfigured || !supabase) return;
+    setIsSyncing(true);
+    try {
+      const res = await fetchAllFromSupabase();
+      if (res.success && res.data) {
+        const fetched = res.data;
+        const hasServerData =
+          (fetched.transaksiKlien && fetched.transaksiKlien.length > 0) ||
+          (fetched.reportBank && fetched.reportBank.length > 0) ||
+          (fetched.transaksiVendor && fetched.transaksiVendor.length > 0) ||
+          (fetched.operasional && fetched.operasional.length > 0) ||
+          (fetched.masterVendor && fetched.masterVendor.length > 0);
+
+        if (hasServerData) {
+          setDb((prev) => ({
+            ...prev,
+            ...fetched,
+            ketentuan: prev.ketentuan || DEFAULT_KETENTUAN,
+          }));
+          setIsSupabaseConnected(true);
+          showToast('Data berhasil disinkronkan dari Supabase.');
+        } else {
+          setIsSupabaseConnected(true);
+        }
+      } else if (res.error) {
+        console.warn('Supabase fetch error:', res.error);
+        setIsSupabaseConnected(false);
+      }
+    } catch (e) {
+      console.error('Failed to load Supabase data:', e);
+      setIsSupabaseConnected(false);
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isSupabaseConfigured) {
+      refreshFromSupabase();
+    }
+  }, []);
+
+  // Upload/Push entire DB to Supabase
+  const syncAllToSupabase = async (customDb?: DatabaseState): Promise<boolean> => {
+    if (!isSupabaseConfigured || !supabase) {
+      showToast('Konfigurasi Supabase URL / Anon Key belum terpasang.');
+      return false;
+    }
+    setIsSyncing(true);
+    showToast('Mengunggah seluruh data ke database Supabase...');
+    const target = customDb || db;
+    const res = await pushAllToSupabase(target);
+    setIsSyncing(false);
+    if (res.success) {
+      setIsSupabaseConnected(true);
+      showToast('Sukses! Seluruh data kini telah tersimpan di Supabase.');
+      return true;
+    } else {
+      setIsSupabaseConnected(false);
+      showToast(`Gagal kirim ke Supabase: ${res.error}`);
+      return false;
+    }
   };
 
   // Save Aktual Cash
@@ -243,14 +328,20 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
       ...prev,
       aktualCash: [...prev.aktualCash, newEntry],
     }));
+
+    if (supabase) {
+      supabase.from('aktual_cash').upsert(mapAktualCashToSnake(newEntry), { onConflict: 'id' }).then(({ error }) => {
+        if (error) console.error('Supabase error saveAktualCash:', error);
+      });
+    }
+
     showToast('Aktual Cash Balance berhasil diperbarui.');
   };
 
-  // Dynamic Bank Balances (per rekening bank yang terdaftar)
+  // Dynamic Bank Balances
   const bankBalances = useMemo(() => {
     const balances: Record<string, BankCalculatedBalance> = {};
 
-    // 1. Inisialisasi seluruh rekening yang terdaftar di sistem dengan Saldo Awal masing-masing
     db.reportBank.forEach((b) => {
       const initial = Number(b.cashSaldo) || 0;
       balances[b.namaBank] = {
@@ -264,13 +355,11 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
       };
     });
 
-    // Helper untuk pencocokan nama bank secara case-insensitive & trimmed
     const getBankKey = (name?: string): string | null => {
       if (!name || !name.trim()) return null;
       const target = name.trim().toLowerCase();
       const found = Object.keys(balances).find((k) => k.trim().toLowerCase() === target);
       if (found) return found;
-      // Jika bank belum terdaftar di reportBank, buat entri agar mutasi tidak hilang
       balances[name.trim()] = {
         saldoAwal: 0,
         uangMasukKlien: 0,
@@ -283,7 +372,6 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
       return name.trim();
     };
 
-    // 2. Akumulasi mutasi masuk dari Transaksi Klien
     db.transaksiKlien.forEach((k) => {
       const bayar = Number(k.pembayaranKlien) || 0;
       const nilai = Number(k.nilaiInvoice) || 0;
@@ -297,7 +385,6 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
       }
     });
 
-    // 3. Akumulasi mutasi keluar ke Transaksi Vendor
     db.transaksiVendor.forEach((v) => {
       const bayar = Number(v.pembayaran) || 0;
       const nilai = Number(v.nilaiTransaksi) || 0;
@@ -311,7 +398,6 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
       }
     });
 
-    // 4. Akumulasi mutasi keluar biaya Operasional
     db.operasional.forEach((o) => {
       const bayar = Number(o.pembayaran) || 0;
       const key = getBankKey(o.bank);
@@ -324,49 +410,49 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
     return balances;
   }, [db.reportBank, db.transaksiKlien, db.transaksiVendor, db.operasional]);
 
-  // Akumulasi total saldo kas & bank dari SELURUH rekening yang terdaftar di sistem
-  const totalAccumulatedBankBalance = useMemo(() => {
-    return Object.values(bankBalances).reduce(
-      (sum, b) => sum + (Number(b.saldoAkhir) || 0),
-      0
-    );
-  }, [bankBalances]);
-
-  // Aktual Cash Balance merefleksikan akumulasi seluruh rekening bank
-  const aktualCashBalance = totalAccumulatedBankBalance;
-
   // KPIs
   const kpis = useMemo(() => {
-    let totalOmset = 0;
-    let totalModalAwal = 0;
-    let totalPiutang = 0;
-    let invoiceOpen = 0;
-    let invoiceClosed = 0;
-
-    db.transaksiKlien.forEach((k) => {
-      const n = Number(k.nilaiInvoice) || 0;
-      const b = Number(k.pembayaranKlien) || 0;
-      const mAwal = Number(k.modalAwal) || 0;
-
-      totalOmset += n;
-      totalModalAwal += mAwal;
-      if (n > b) totalPiutang += n - b;
-
-      const stat = String(k.status || '').toLowerCase();
-      if (stat === 'lunas') {
-        invoiceClosed++;
-      } else {
-        invoiceOpen++;
-      }
+    let totalSaldoBank = 0;
+    Object.values(bankBalances).forEach((b) => {
+      totalSaldoBank += b.saldoAkhir;
     });
 
     let totalHutang = 0;
     let totalModalAkhir = 0;
     db.transaksiVendor.forEach((v) => {
-      const n = Number(v.nilaiTransaksi) || 0;
-      const b = Number(v.pembayaran) || 0;
-      if (n > b) totalHutang += n - b;
-      totalModalAkhir += n;
+      const nilai = Number(v.nilaiTransaksi) || 0;
+      const bayar = Number(v.pembayaran) || 0;
+      totalModalAkhir += nilai;
+      if (nilai > bayar) {
+        totalHutang += nilai - bayar;
+      }
+    });
+
+    let totalModalAwal = 0;
+    let totalModalAwalOpen = 0;
+    let totalOmset = 0;
+    let totalPiutang = 0;
+    let openCount = 0;
+    let closedCount = 0;
+
+    db.transaksiKlien.forEach((k) => {
+      const nilai = Number(k.nilaiInvoice) || 0;
+      const bayar = Number(k.pembayaranKlien) || 0;
+      const modal = Number(k.modalAwal) || 0;
+
+      totalOmset += nilai;
+      totalModalAwal += modal;
+
+      if (k.status === 'Lunas') {
+        closedCount += 1;
+      } else {
+        openCount += 1;
+        totalModalAwalOpen += modal;
+      }
+
+      if (nilai > bayar) {
+        totalPiutang += nilai - bayar;
+      }
     });
 
     let totalOperasional = 0;
@@ -374,37 +460,13 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
       totalOperasional += Number(o.pembayaran) || 0;
     });
 
-    // 1. Saldo Bank: Akumulasi saldo akhir dari seluruh rekening bank yang terdaftar di sistem
-    const saldoBank = Object.values(bankBalances).reduce(
-      (sum, b) => sum + (Number(b.saldoAkhir) || 0),
-      0
-    );
-
-    // 2. Komitmen Modal Awal untuk invoice proyek yang masih aktif/berjalan (Open: DP atau Tempo)
-    let modalAwalOpen = 0;
-    db.transaksiKlien.forEach((k) => {
-      const stat = String(k.status || '').toLowerCase();
-      if (stat !== 'lunas') {
-        modalAwalOpen += Number(k.modalAwal) || 0;
-      }
-    });
-
-    // Free cash revisi: Total Saldo Bank - Hutang Vendor - Modal Awal - Beban Operasional
-    const freeCash = saldoBank - totalHutang - totalModalAwal - totalOperasional;
+    const freeCash = totalSaldoBank - totalHutang - totalModalAwal - totalOperasional;
     const grossMargin = totalOmset - totalModalAkhir;
 
-    const freeCashBreakdown = {
-      saldoBank,
-      totalHutang,
-      totalModalAwal,
-      totalOperasional,
-      freeCash,
-    };
-
     return {
-      saldoBank,
+      saldoBank: totalSaldoBank,
       freeCash,
-      modalAwalOpen,
+      modalAwalOpen: totalModalAwalOpen,
       totalOmset,
       grossMargin,
       totalOperasional,
@@ -412,11 +474,23 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
       totalHutang,
       totalModalAwal,
       totalModalAkhir,
-      invoiceOpen,
-      invoiceClosed,
-      freeCashBreakdown,
+      invoiceOpen: openCount,
+      invoiceClosed: closedCount,
+      freeCashBreakdown: {
+        saldoBank: totalSaldoBank,
+        totalHutang,
+        totalModalAwal,
+        totalOperasional,
+        freeCash,
+      },
     };
   }, [db, bankBalances]);
+
+  const aktualCashBalance = useMemo(() => {
+    if (db.aktualCash.length === 0) return 0;
+    const sorted = [...db.aktualCash].sort((a, b) => (b.tanggal > a.tanggal ? 1 : -1));
+    return sorted[0].nilai;
+  }, [db.aktualCash]);
 
   // Transaksi Klien Handlers
   const saveKlien = (item: TransaksiKlien) => {
@@ -431,6 +505,13 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
       }
       return { ...prev, transaksiKlien: updated };
     });
+
+    if (supabase) {
+      supabase.from('transaksi_klien').upsert(mapKlienToSnake(item), { onConflict: 'id' }).then(({ error }) => {
+        if (error) console.error('Supabase error saveKlien:', error);
+      });
+    }
+
     showToast(`Data Transaksi Klien ${item.invoice} tersimpan.`);
   };
 
@@ -439,6 +520,13 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
       ...prev,
       transaksiKlien: prev.transaksiKlien.filter((r) => r.id !== id),
     }));
+
+    if (supabase) {
+      supabase.from('transaksi_klien').delete().eq('id', id).then(({ error }) => {
+        if (error) console.error('Supabase error deleteKlien:', error);
+      });
+    }
+
     showToast('Data Transaksi Klien berhasil dihapus.');
   };
 
@@ -447,6 +535,13 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
       ...prev,
       transaksiKlien: prev.transaksiKlien.filter((r) => !ids.includes(r.id)),
     }));
+
+    if (supabase) {
+      supabase.from('transaksi_klien').delete().in('id', ids).then(({ error }) => {
+        if (error) console.error('Supabase error deleteMultipleKlien:', error);
+      });
+    }
+
     showToast(`${ids.length} data Transaksi Klien dihapus.`);
   };
 
@@ -463,6 +558,13 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
       }
       return { ...prev, transaksiVendor: updated };
     });
+
+    if (supabase) {
+      supabase.from('transaksi_vendor').upsert(mapVendorToSnake(item), { onConflict: 'id' }).then(({ error }) => {
+        if (error) console.error('Supabase error saveVendor:', error);
+      });
+    }
+
     showToast(`Data Transaksi Vendor (${item.namaVendor}) tersimpan.`);
   };
 
@@ -471,6 +573,13 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
       ...prev,
       transaksiVendor: prev.transaksiVendor.filter((r) => r.id !== id),
     }));
+
+    if (supabase) {
+      supabase.from('transaksi_vendor').delete().eq('id', id).then(({ error }) => {
+        if (error) console.error('Supabase error deleteVendor:', error);
+      });
+    }
+
     showToast('Data Transaksi Vendor berhasil dihapus.');
   };
 
@@ -479,6 +588,13 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
       ...prev,
       transaksiVendor: prev.transaksiVendor.filter((r) => !ids.includes(r.id)),
     }));
+
+    if (supabase) {
+      supabase.from('transaksi_vendor').delete().in('id', ids).then(({ error }) => {
+        if (error) console.error('Supabase error deleteMultipleVendor:', error);
+      });
+    }
+
     showToast(`${ids.length} data Transaksi Vendor dihapus.`);
   };
 
@@ -495,6 +611,13 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
       }
       return { ...prev, operasional: updated };
     });
+
+    if (supabase) {
+      supabase.from('operasional').upsert(mapOperasionalToSnake(item), { onConflict: 'id' }).then(({ error }) => {
+        if (error) console.error('Supabase error saveOperasional:', error);
+      });
+    }
+
     showToast(`Data Operasional "${item.pengeluaran}" tersimpan.`);
   };
 
@@ -503,6 +626,13 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
       ...prev,
       operasional: prev.operasional.filter((r) => r.id !== id),
     }));
+
+    if (supabase) {
+      supabase.from('operasional').delete().eq('id', id).then(({ error }) => {
+        if (error) console.error('Supabase error deleteOperasional:', error);
+      });
+    }
+
     showToast('Data Operasional berhasil dihapus.');
   };
 
@@ -511,6 +641,13 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
       ...prev,
       operasional: prev.operasional.filter((r) => !ids.includes(r.id)),
     }));
+
+    if (supabase) {
+      supabase.from('operasional').delete().in('id', ids).then(({ error }) => {
+        if (error) console.error('Supabase error deleteMultipleOperasional:', error);
+      });
+    }
+
     showToast(`${ids.length} data Operasional dihapus.`);
   };
 
@@ -527,6 +664,13 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
       }
       return { ...prev, masterVendor: updated };
     });
+
+    if (supabase) {
+      supabase.from('master_vendor').upsert(mapMasterVendorToSnake(item), { onConflict: 'id' }).then(({ error }) => {
+        if (error) console.error('Supabase error saveMasterVendor:', error);
+      });
+    }
+
     showToast(`Master Vendor "${item.namaVendor}" tersimpan.`);
   };
 
@@ -535,6 +679,13 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
       ...prev,
       masterVendor: prev.masterVendor.filter((r) => r.id !== id),
     }));
+
+    if (supabase) {
+      supabase.from('master_vendor').delete().eq('id', id).then(({ error }) => {
+        if (error) console.error('Supabase error deleteMasterVendor:', error);
+      });
+    }
+
     showToast('Master Vendor dihapus.');
   };
 
@@ -551,6 +702,13 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
       }
       return { ...prev, reportBank: updated };
     });
+
+    if (supabase) {
+      supabase.from('report_bank').upsert(mapBankToSnake(item), { onConflict: 'id' }).then(({ error }) => {
+        if (error) console.error('Supabase error saveBank:', error);
+      });
+    }
+
     showToast(`Rekening Bank "${item.namaBank}" tersimpan.`);
   };
 
@@ -559,6 +717,13 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
       ...prev,
       reportBank: prev.reportBank.filter((r) => r.id !== id),
     }));
+
+    if (supabase) {
+      supabase.from('report_bank').delete().eq('id', id).then(({ error }) => {
+        if (error) console.error('Supabase error deleteBank:', error);
+      });
+    }
+
     showToast('Rekening Bank dihapus.');
   };
 
@@ -593,7 +758,7 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
   // Reset & Clear Handlers
   const resetData = () => {
     setDb(INITIAL_DATABASE);
-    showToast('Data telah direset ke kondisi default (kosong).');
+    showToast('Data telah direset ke kondisi default.');
   };
 
   const clearAll = () => {
@@ -606,11 +771,11 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
       aktualCash: [],
       ketentuan: DEFAULT_KETENTUAN,
     });
-    showToast('Seluruh data transaksi telah dikosongkan.');
+    showToast('Seluruh data transaksi lokal telah dikosongkan.');
   };
 
   const importDatabase = (newData: DatabaseState) => {
-    setDb({
+    const formatted: DatabaseState = {
       transaksiKlien: newData.transaksiKlien || [],
       transaksiVendor: newData.transaksiVendor || [],
       operasional: newData.operasional || [],
@@ -618,8 +783,13 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
       reportBank: newData.reportBank || [],
       aktualCash: newData.aktualCash || [],
       ketentuan: newData.ketentuan || DEFAULT_KETENTUAN,
-    });
+    };
+    setDb(formatted);
     showToast('Database berhasil diimpor!');
+
+    if (isSupabaseConfigured) {
+      syncAllToSupabase(formatted);
+    }
   };
 
   // Cross-module payment recording
@@ -627,6 +797,7 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
     const amount = Number(additionalAmount) || 0;
     if (amount <= 0) return;
 
+    let updatedTarget: TransaksiKlien | null = null;
     setDb((prev) => {
       const updated = prev.transaksiKlien.map((k) => {
         if (k.id === klienId) {
@@ -638,17 +809,26 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
           } else if (newBayar > 0) {
             newStatus = 'DP';
           }
-          return {
+          const itemUpdated: TransaksiKlien = {
             ...k,
             pembayaranKlien: newBayar,
             status: newStatus,
             bank: targetBank || k.bank,
           };
+          updatedTarget = itemUpdated;
+          return itemUpdated;
         }
         return k;
       });
       return { ...prev, transaksiKlien: updated };
     });
+
+    if (supabase && updatedTarget) {
+      supabase.from('transaksi_klien').upsert(mapKlienToSnake(updatedTarget), { onConflict: 'id' }).then(({ error }) => {
+        if (error) console.error('Supabase error recordKlienPayment:', error);
+      });
+    }
+
     showToast(`Penerimaan pembayaran piutang klien berhasil dicatat.`);
   };
 
@@ -656,6 +836,7 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
     const amount = Number(additionalAmount) || 0;
     if (amount <= 0) return;
 
+    let updatedTarget: TransaksiVendor | null = null;
     setDb((prev) => {
       const updated = prev.transaksiVendor.map((v) => {
         if (v.id === vendorId) {
@@ -667,17 +848,26 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
           } else if (newBayar > 0) {
             newStatus = 'DP';
           }
-          return {
+          const itemUpdated: TransaksiVendor = {
             ...v,
             pembayaran: newBayar,
             status: newStatus,
             bank: targetBank || v.bank,
           };
+          updatedTarget = itemUpdated;
+          return itemUpdated;
         }
         return v;
       });
       return { ...prev, transaksiVendor: updated };
     });
+
+    if (supabase && updatedTarget) {
+      supabase.from('transaksi_vendor').upsert(mapVendorToSnake(updatedTarget), { onConflict: 'id' }).then(({ error }) => {
+        if (error) console.error('Supabase error recordVendorPayment:', error);
+      });
+    }
+
     showToast(`Pembayaran hutang vendor berhasil dicatat.`);
   };
 
@@ -689,6 +879,11 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
         setCurrentPage,
         toastMessage,
         showToast,
+        isSupabaseConfigured,
+        isSupabaseConnected,
+        isSyncing,
+        syncAllToSupabase,
+        refreshFromSupabase,
         saveKlien,
         deleteKlien,
         deleteMultipleKlien,
