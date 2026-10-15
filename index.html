@@ -16,6 +16,24 @@
   </head>
   <body class="bg-[#0B0914] text-slate-100 antialiased selection:bg-purple-600 selection:text-white">
     <div id="root"></div>
+    <script>
+      // Pastikan Service Worker PWA tidak aktif dan dihapus dari browser klien
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.getRegistrations().then(function (registrations) {
+          for (var registration of registrations) {
+            registration.unregister();
+            console.log('ServiceWorker client-side unregistered:', registration);
+          }
+        });
+      }
+      if ('caches' in window) {
+        caches.keys().then(function (names) {
+          for (var name of names) {
+            caches.delete(name);
+          }
+        });
+      }
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
