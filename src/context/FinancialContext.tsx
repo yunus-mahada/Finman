@@ -12,274 +12,94 @@ import {
   KetentuanItem,
 } from '../types';
 
-const STORAGE_KEY = 'finman_database_store_v1';
+const STORAGE_KEY = 'finman_database_store_v2';
+
+export const DEFAULT_KETENTUAN: KetentuanItem[] = [
+  {
+    id: 'KTN-01',
+    judul: 'Rumus Perhitungan Free Cash',
+    kategori: 'Rumus & Logika',
+    ringkasan: 'Standar perhitungan dana kas bebas dari kewajiban, modal awal, dan operasional.',
+    rumus: 'Free Cash = Total Saldo Bank - Hutang Vendor - Modal Awal - Beban Operasional',
+    penjelasan:
+      'Perhitungan Free Cash menunjukkan dana yang benar-benar tersedia setelah memperhitungkan seluruh kewajiban dan pengeluaran:\n' +
+      '1. Total Saldo Bank: Akumulasi saldo akhir dari seluruh rekening bank aktif di sistem.\n' +
+      '2. Hutang Vendor: Total kewajiban tagihan vendor yang belum dibayar (tempo/sisa DP).\n' +
+      '3. Modal Awal: Total modal awal yang dialokasikan untuk seluruh transaksi klien.\n' +
+      '4. Beban Operasional: Total pengeluaran beban operasional yang dicatat di sistem.',
+    tanggalUpdate: '2026-07-15',
+    isPinned: true,
+  },
+  {
+    id: 'KTN-02',
+    judul: 'Rumus Akumulasi Saldo Kas & Bank',
+    kategori: 'Rumus & Logika',
+    ringkasan: 'Perhitungan posisi kas bank riil berbasis mutasi transaksi masuk dan keluar.',
+    rumus: 'Saldo Akhir Bank = Saldo Awal + Pembayaran Klien - Pengeluaran Vendor - Pengeluaran Operasional',
+    penjelasan:
+      'Setiap rekening bank (BCA, BSI, Mandiri, dll.) memiliki saldo awal dan mutasi mandiri. Saldo Bank di Dashboard merupakan akumulasi (penjumlahan) dari saldo akhir seluruh rekening bank aktif.',
+    tanggalUpdate: '2026-07-15',
+    isPinned: true,
+  },
+  {
+    id: 'KTN-03',
+    judul: 'Rumus Gross Margin & Profitabilitas',
+    kategori: 'Rumus & Logika',
+    ringkasan: 'Perhitungan keuntungan kotor proyek sebelum beban operasional.',
+    rumus: 'Gross Margin = Total Nilai Invoice Klien (Omset) - Total Modal Akhir Vendor (HPP)',
+    penjelasan:
+      'Mengukur margin laba kotor dari seluruh proyek yang berjalan. Persentase Margin dihitung dari (Gross Margin / Total Omset) * 100%. Beban operasional umum (overhead kantor) dievaluasi secara terpisah.',
+    tanggalUpdate: '2026-07-15',
+    isPinned: true,
+  },
+  {
+    id: 'KTN-04',
+    judul: 'Ketentuan Piutang Klien & Jadwal Penagihan',
+    kategori: 'Klien & Piutang',
+    ringkasan: 'Klasifikasi penagihan invoice klien berdasarkan umur piutang (Aging).',
+    rumus: 'Piutang = Nilai Invoice - Pembayaran Klien yang Diterima',
+    penjelasan:
+      'Invoice klien yang belum lunas (status DP atau Tempo) wajib dipantau melalui Aging Report:\n' +
+      '- 0-30 Hari: Lancar (Reminder berkala)\n' +
+      '- 31-60 Hari: Perhatian (Follow-up tim sales)\n' +
+      '- 61-90 Hari: Warning (Surat tagihan resmi)\n' +
+      '- > 90 Hari: Kritis (Eskalasi manajemen & penahanan layanan baru).',
+    tanggalUpdate: '2026-07-15',
+    isPinned: false,
+  },
+  {
+    id: 'KTN-05',
+    judul: 'Ketentuan Hutang Vendor & Manajemen Tempo',
+    kategori: 'Vendor & Hutang',
+    ringkasan: 'SOP pembayaran kewajiban pengadaan dan jasa kepada rekanan vendor.',
+    rumus: 'Hutang = Nilai Transaksi Vendor - Pembayaran Riil ke Vendor',
+    penjelasan:
+      'Pembayaran vendor wajib memprioritaskan invoice yang mendekati tanggal jatuh tempo. Pastikan pembayaran vendor disinkronkan dengan ketersediaan Free Cash agar arus kas tetap likuid.',
+    tanggalUpdate: '2026-07-15',
+    isPinned: false,
+  },
+  {
+    id: 'KTN-06',
+    judul: 'Kebijakan Batas Aman Likuiditas (Minimum Cash Buffer)',
+    kategori: 'Kebijakan Kas',
+    ringkasan: 'Standar batas minimum Free Cash agar operasional perusahaan tidak terganggu.',
+    rumus: 'Minimum Buffer = 1.5x Rata-rata Biaya Operasional Bulanan',
+    penjelasan:
+      'Free Cash idealnya tidak boleh negatif. Jika Free Cash berada di bawah batas minimum buffer, manajemen wajib mempercepat penagihan piutang dan menunda pengeluaran modal non-esensial.',
+    tanggalUpdate: '2026-07-15',
+    isPinned: false,
+  },
+];
 
 export const INITIAL_DATABASE: DatabaseState = {
-  transaksiKlien: [
-    {
-      id: 'KLN-A418',
-      tanggal: '2026-06-22',
-      invoice: 'A418',
-      brand: 'ALB',
-      klien: 'Khosyi Multimedia',
-      sales: 'Andi Saputra',
-      nilaiInvoice: 24200000,
-      modalAwal: 8000000,
-      pembayaranKlien: 12235000,
-      status: 'DP',
-      bank: 'BCA Mahada',
-    },
-    {
-      id: 'KLN-A419',
-      tanggal: '2026-06-25',
-      invoice: 'A419',
-      brand: 'TechCorp',
-      klien: 'PT Maju Mandiri',
-      sales: 'Budi Santoso',
-      nilaiInvoice: 50000000,
-      modalAwal: 30000000,
-      pembayaranKlien: 50000000,
-      status: 'Lunas',
-      bank: 'BCA Mahada',
-    },
-    {
-      id: 'KLN-A420',
-      tanggal: '2026-07-02',
-      invoice: 'A420',
-      brand: 'Garuda Jaya',
-      klien: 'CV Prima Lestari',
-      sales: 'Cindy Amelia',
-      nilaiInvoice: 38500000,
-      modalAwal: 15000000,
-      pembayaranKlien: 15000000,
-      status: 'DP',
-      bank: 'BSI PT MGI',
-    },
-    {
-      id: 'KLN-A421',
-      tanggal: '2026-07-10',
-      invoice: 'A421',
-      brand: 'Surya Abadi',
-      klien: 'PT Kencana Solusi',
-      sales: 'Andi Saputra',
-      nilaiInvoice: 17800000,
-      modalAwal: 6500000,
-      pembayaranKlien: 0,
-      status: 'Tempo',
-      bank: 'BCA Mahada',
-    },
-  ],
-  transaksiVendor: [
-    {
-      id: 'VND-101',
-      tanggal: '2026-06-23',
-      invoice: 'A418',
-      namaVendor: 'Vendor Alpha',
-      nilaiTransaksi: 9000000,
-      pembayaran: 4500000,
-      status: 'DP',
-      bank: 'BCA Mahada',
-    },
-    {
-      id: 'VND-102',
-      tanggal: '2026-06-26',
-      invoice: 'A419',
-      namaVendor: 'Vendor Beta',
-      nilaiTransaksi: 25000000,
-      pembayaran: 25000000,
-      status: 'Lunas',
-      bank: 'BCA Mahada',
-    },
-    {
-      id: 'VND-103',
-      tanggal: '2026-07-03',
-      invoice: 'A420',
-      namaVendor: 'Percetakan Prima',
-      nilaiTransaksi: 12000000,
-      pembayaran: 6000000,
-      status: 'DP',
-      bank: 'BSI PT MGI',
-    },
-    {
-      id: 'VND-104',
-      tanggal: '2026-07-11',
-      invoice: 'A421',
-      namaVendor: 'CV Mitra Logistik',
-      nilaiTransaksi: 5800000,
-      pembayaran: 0,
-      status: 'Tempo',
-      bank: 'BCA Mahada',
-    },
-  ],
-  operasional: [
-    {
-      id: 'OP-01',
-      tanggal: '2026-07-01',
-      pengeluaran: 'Gaji Karyawan & Staff',
-      kategori: 'Gaji Karyawan',
-      pembayaran: 18500000,
-      bank: 'BCA Mahada',
-    },
-    {
-      id: 'OP-02',
-      tanggal: '2026-07-05',
-      pengeluaran: 'Tagihan Listrik & Air Kantor',
-      kategori: 'Listrik & Air',
-      pembayaran: 1500000,
-      bank: 'BCA Mahada',
-    },
-    {
-      id: 'OP-03',
-      tanggal: '2026-07-08',
-      pengeluaran: 'Sewa Ruang Kerja & Meeting Room',
-      kategori: 'Sewa Tempat',
-      pembayaran: 4500000,
-      bank: 'BSI PT MGI',
-    },
-    {
-      id: 'OP-04',
-      tanggal: '2026-07-12',
-      pengeluaran: 'Langganan Internet Fiber 200Mbps',
-      kategori: 'Internet & Langganan',
-      pembayaran: 850000,
-      bank: 'BCA Mahada',
-    },
-  ],
-  masterVendor: [
-    {
-      id: 'MST-01',
-      namaVendor: 'Vendor Alpha',
-      noTlp: '081234567890',
-      noRekening: 'BCA 1234567890 a.n Alpha Mandiri',
-    },
-    {
-      id: 'MST-02',
-      namaVendor: 'Vendor Beta',
-      noTlp: '089876543210',
-      noRekening: 'Mandiri 0987654321 a.n Beta Digital',
-    },
-    {
-      id: 'MST-03',
-      namaVendor: 'CV Mitra Logistik',
-      noTlp: '085211998877',
-      noRekening: 'BNI 4433221100 a.n Mitra Logistik',
-    },
-    {
-      id: 'MST-04',
-      namaVendor: 'Percetakan Prima',
-      noTlp: '087788990011',
-      noRekening: 'BCA 9988776655 a.n Prima Grafika',
-    },
-  ],
-  reportBank: [
-    {
-      id: 'BNK-01',
-      namaBank: 'BCA Mahada',
-      noRekening: '1234567890',
-      atasNama: 'PT Usaha Jaya',
-      cashSaldo: 485052531,
-    },
-    {
-      id: 'BNK-02',
-      namaBank: 'BSI PT MGI',
-      noRekening: '0987654321',
-      atasNama: 'PT MGI Bersama',
-      cashSaldo: 50000000,
-    },
-    {
-      id: 'BNK-03',
-      namaBank: 'Mandiri Bisnis',
-      noRekening: '137001928374',
-      atasNama: 'PT Usaha Jaya Finansial',
-      cashSaldo: 35000000,
-    },
-  ],
-  aktualCash: [
-    {
-      id: 'AC-01',
-      tanggal: '2026-07-15',
-      nilai: 570052531, // Total saldo awal akumulasi seluruh rekening (BCA Mahada + BSI + Mandiri)
-    },
-  ],
-  ketentuan: [
-    {
-      id: 'KTN-01',
-      judul: 'Rumus Perhitungan Free Cash',
-      kategori: 'Rumus & Logika',
-      ringkasan: 'Standar perhitungan dana kas bebas dari kewajiban, modal awal, dan operasional.',
-      rumus: 'Free Cash = Total Saldo Bank - Hutang Vendor - Modal Awal - Beban Operasional',
-      penjelasan:
-        'Perhitungan Free Cash menunjukkan dana yang benar-benar tersedia setelah memperhitungkan seluruh kewajiban dan pengeluaran:\n' +
-        '1. Total Saldo Bank: Akumulasi saldo akhir dari seluruh rekening bank aktif di sistem.\n' +
-        '2. Hutang Vendor: Total kewajiban tagihan vendor yang belum dibayar (tempo/sisa DP).\n' +
-        '3. Modal Awal: Total modal awal yang dialokasikan untuk seluruh transaksi klien.\n' +
-        '4. Beban Operasional: Total pengeluaran beban operasional yang dicatat di sistem.',
-      tanggalUpdate: '2026-07-15',
-      isPinned: true,
-    },
-    {
-      id: 'KTN-02',
-      judul: 'Rumus Akumulasi Saldo Kas & Bank',
-      kategori: 'Rumus & Logika',
-      ringkasan: 'Perhitungan posisi kas bank riil berbasis mutasi transaksi masuk dan keluar.',
-      rumus: 'Saldo Akhir Bank = Saldo Awal + Pembayaran Klien - Pengeluaran Vendor - Pengeluaran Operasional',
-      penjelasan:
-        'Setiap rekening bank (BCA, BSI, Mandiri, dll.) memiliki saldo awal dan mutasi mandiri. Saldo Bank di Dashboard merupakan akumulasi (penjumlahan) dari saldo akhir seluruh rekening bank aktif.',
-      tanggalUpdate: '2026-07-15',
-      isPinned: true,
-    },
-    {
-      id: 'KTN-03',
-      judul: 'Rumus Gross Margin & Profitabilitas',
-      kategori: 'Rumus & Logika',
-      ringkasan: 'Perhitungan keuntungan kotor proyek sebelum beban operasional.',
-      rumus: 'Gross Margin = Total Nilai Invoice Klien (Omset) - Total Modal Akhir Vendor (HPP)',
-      penjelasan:
-        'Mengukur margin laba kotor dari seluruh proyek yang berjalan. Persentase Margin dihitung dari (Gross Margin / Total Omset) * 100%. Beban operasional umum (overhead kantor) dievaluasi secara terpisah.',
-      tanggalUpdate: '2026-07-15',
-      isPinned: true,
-    },
-    {
-      id: 'KTN-04',
-      judul: 'Ketentuan Piutang Klien & Jadwal Penagihan',
-      kategori: 'Klien & Piutang',
-      ringkasan: 'Klasifikasi penagihan invoice klien berdasarkan umur piutang (Aging).',
-      rumus: 'Piutang = Nilai Invoice - Pembayaran Klien yang Diterima',
-      penjelasan:
-        'Invoice klien yang belum lunas (status DP atau Tempo) wajib dipantau melalui Aging Report:\n' +
-        '- 0-30 Hari: Lancar (Reminder berkala)\n' +
-        '- 31-60 Hari: Perhatian (Follow-up tim sales)\n' +
-        '- 61-90 Hari: Warning (Surat tagihan resmi)\n' +
-        '- > 90 Hari: Kritis (Eskalasi manajemen & penahanan layanan baru).',
-      tanggalUpdate: '2026-07-15',
-      isPinned: false,
-    },
-    {
-      id: 'KTN-05',
-      judul: 'Ketentuan Hutang Vendor & Manajemen Tempo',
-      kategori: 'Vendor & Hutang',
-      ringkasan: 'SOP pembayaran kewajiban pengadaan dan jasa kepada rekanan vendor.',
-      rumus: 'Hutang = Nilai Transaksi Vendor - Pembayaran Riil ke Vendor',
-      penjelasan:
-        'Pembayaran vendor wajib memprioritaskan invoice yang mendekati tanggal jatuh tempo. Pastikan pembayaran vendor disinkronkan dengan ketersediaan Free Cash agar arus kas tetap likuid.',
-      tanggalUpdate: '2026-07-15',
-      isPinned: false,
-    },
-    {
-      id: 'KTN-06',
-      judul: 'Kebijakan Batas Aman Likuiditas (Minimum Cash Buffer)',
-      kategori: 'Kebijakan Kas',
-      ringkasan: 'Standar batas minimum Free Cash agar operasional perusahaan tidak terganggu.',
-      rumus: 'Minimum Buffer = 1.5x Rata-rata Biaya Operasional Bulanan',
-      penjelasan:
-        'Free Cash idealnya tidak boleh negatif. Jika Free Cash berada di bawah batas minimum buffer, manajemen wajib mempercepat penagihan piutang dan menunda pengeluaran modal non-esensial.',
-      tanggalUpdate: '2026-07-15',
-      isPinned: false,
-    },
-  ],
+  transaksiKlien: [],
+  transaksiVendor: [],
+  operasional: [],
+  masterVendor: [],
+  reportBank: [],
+  aktualCash: [],
+  ketentuan: DEFAULT_KETENTUAN,
 };
-
-export const DEFAULT_KETENTUAN = INITIAL_DATABASE.ketentuan || [];
 
 interface FinancialContextType {
   db: DatabaseState;
@@ -363,30 +183,15 @@ const FinancialContext = createContext<FinancialContextType | undefined>(undefin
 export function FinancialProvider({ children }: { children: ReactNode }) {
   const [db, setDb] = useState<DatabaseState>(() => {
     try {
+      // Bersihkan cache v1 lama jika ada
+      localStorage.removeItem('finman_database_store_v1');
+
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (parsed.transaksiKlien && parsed.reportBank) {
+        if (Array.isArray(parsed.transaksiKlien) && Array.isArray(parsed.reportBank)) {
           if (!parsed.ketentuan || parsed.ketentuan.length === 0) {
             parsed.ketentuan = DEFAULT_KETENTUAN;
-          } else {
-            // Sinkronkan KTN-01 dengan formula revisi pengguna
-            parsed.ketentuan = parsed.ketentuan.map((k: KetentuanItem) => {
-              if (k.id === 'KTN-01') {
-                return {
-                  ...k,
-                  judul: 'Rumus Perhitungan Free Cash',
-                  rumus: 'Free Cash = Total Saldo Bank - Hutang Vendor - Modal Awal - Beban Operasional',
-                  penjelasan:
-                    'Perhitungan Free Cash menunjukkan dana yang benar-benar tersedia setelah memperhitungkan seluruh kewajiban dan pengeluaran:\n' +
-                    '1. Total Saldo Bank: Akumulasi saldo akhir dari seluruh rekening bank aktif di sistem.\n' +
-                    '2. Hutang Vendor: Total kewajiban tagihan vendor yang belum dibayar (tempo/sisa DP).\n' +
-                    '3. Modal Awal: Total modal awal yang dialokasikan untuk seluruh transaksi klien.\n' +
-                    '4. Beban Operasional: Total pengeluaran beban operasional yang dicatat di sistem.',
-                };
-              }
-              return k;
-            });
           }
           return parsed;
         }
@@ -788,7 +593,7 @@ export function FinancialProvider({ children }: { children: ReactNode }) {
   // Reset & Clear Handlers
   const resetData = () => {
     setDb(INITIAL_DATABASE);
-    showToast('Data telah direset ke data simulasi awal.');
+    showToast('Data telah direset ke kondisi default (kosong).');
   };
 
   const clearAll = () => {

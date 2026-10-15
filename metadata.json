@@ -1,5 +1,5 @@
 {
-  "name": "FinMan - Financial Management Dashboard",
+  "name": "FinMan",
   "description": "Sistem Manajemen Keuangan Bisnis untuk Transaksi Klien, Vendor, Operasional, Kas Bank, dan Aging Report.",
   "requestFramePermissions": [],
   "majorCapabilities": [

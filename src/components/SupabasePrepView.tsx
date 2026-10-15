@@ -297,7 +297,7 @@ VITE_SUPABASE_ANON_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
                 className="flex items-center gap-1.5 text-xs text-amber-400 hover:text-amber-300 font-medium px-3 py-1.5 rounded-lg hover:bg-amber-950/30 transition"
               >
                 <RefreshCw className="w-3.5 h-3.5" />
-                <span>Reset ke Data Simulasi Demo</span>
+                <span>Reset ke Default (Kosong)</span>
               </button>
 
               <button
@@ -315,8 +315,8 @@ VITE_SUPABASE_ANON_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
       {/* Confirmation Modals */}
       <ConfirmModal
         isOpen={isResetConfirmOpen}
-        title="Reset ke Data Simulasi?"
-        message="Data saat ini akan digantikan dengan data contoh awal FinMan."
+        title="Reset ke Default Kosong?"
+        message="Seluruh data transaksi dan rekening akan direset ke kondisi default kosong siap input."
         confirmLabel="Ya, Reset"
         danger={false}
         onConfirm={() => {
